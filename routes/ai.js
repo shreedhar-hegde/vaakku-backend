@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import axios from 'axios';
+import { sarvamPost } from '../lib/sarvamClient.js';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
@@ -31,6 +31,8 @@ const upload = multer({
 
 const router = Router();
 const SARVAM_BASE = 'https://api.sarvam.ai';
+const TRANSLATE_MODES = ['formal', 'modern-colloquial', 'classic-colloquial', 'code-mixed'];
+const TRANSLATE_SPEAKER_GENDERS = ['Male', 'Female'];
 
 /** Return a safe user-facing message; avoid leaking config in production. */
 function toSafeErrorMsg(err, fallback) {
@@ -134,10 +136,9 @@ router.post('/tts', async (req, res) => {
       ...(pace != null && { pace: Number(pace) }),
     };
 
-    const { data, status } = await axios.post(`${SARVAM_BASE}/text-to-speech`, payload, {
+    const { data, status } = await sarvamPost(`${SARVAM_BASE}/text-to-speech`, payload, {
       headers: sarvamHeaders(apiKey),
       responseType: 'json',
-      validateStatus: () => true,
     });
 
     if (status !== 200) {
@@ -203,17 +204,23 @@ router.post('/stt', upload.single('file'), async (req, res) => {
     form.append('mode', req.body.mode || 'transcribe');
     if (req.body.language_code) form.append('language_code', req.body.language_code);
 
-    const { data, status } = await axios.post(`${SARVAM_BASE}/speech-to-text`, form, {
+    const { data, status } = await sarvamPost(`${SARVAM_BASE}/speech-to-text`, form, {
       headers: { ...form.getHeaders(), 'api-subscription-key': apiKey },
       maxBodyLength: Infinity,
       maxContentLength: Infinity,
-      validateStatus: () => true,
     });
 
     await unlinkFile();
 
     if (status !== 200) {
       if (!isAnonymous && !useOwnKey) await refundCredits(req.user.id, cost);
+      const upstreamMessage = String(data?.error?.message || data?.error || data?.message || '');
+      if (/duration|too long|30 second/i.test(upstreamMessage)) {
+        return res.status(status).json({
+          error: 'This clip is too long for instant transcription (~30s limit). Trim it and try again.',
+          code: 'AUDIO_TOO_LONG',
+        });
+      }
       return res.status(status).json(data?.error || data || { error: 'STT failed' });
     }
 
@@ -228,6 +235,34 @@ router.post('/stt', upload.single('file'), async (req, res) => {
     unlinkFile();
     if (process.env.NODE_ENV !== 'production') console.error('STT error:', err);
     res.status(500).json({ error: toSafeErrorMsg(err, 'STT failed') });
+  }
+});
+
+router.post('/detect-language', async (req, res) => {
+  try {
+    const isAnonymous = !req.user;
+    const { apiKey } = isAnonymous
+      ? { apiKey: getServerApiKey() }
+      : await getApiKeyForUser(req.user.id);
+
+    const input = String(req.body?.input || '').slice(0, 1000);
+    if (!input.trim()) {
+      return res.status(400).json({ error: 'input required' });
+    }
+
+    const { data, status } = await sarvamPost(`${SARVAM_BASE}/text-lid`, { input }, {
+      headers: sarvamHeaders(apiKey),
+      responseType: 'json',
+    });
+
+    if (status !== 200) {
+      return res.status(status).json(data?.error || data || { error: 'Language detection failed' });
+    }
+
+    res.json({ language_code: data?.language_code, script_code: data?.script_code });
+  } catch (err) {
+    if (process.env.NODE_ENV !== 'production') console.error('Detect-language error:', err);
+    res.status(500).json({ error: toSafeErrorMsg(err, 'Language detection failed') });
   }
 });
 
@@ -263,9 +298,15 @@ router.post('/translate', async (req, res) => {
       ? { apiKey: getServerApiKey(), useOwnKey: false }
       : await getApiKeyForUser(req.user.id);
 
-    const { input, source_language_code, target_language_code, model = 'mayura:v1' } = req.body;
+    const { input, source_language_code, target_language_code, model = 'mayura:v1', mode, speaker_gender } = req.body;
     if (!input || source_language_code == null || !target_language_code) {
       return res.status(400).json({ error: 'input, source_language_code, and target_language_code required' });
+    }
+    if (mode != null && !TRANSLATE_MODES.includes(mode)) {
+      return res.status(400).json({ error: `mode must be one of: ${TRANSLATE_MODES.join(', ')}` });
+    }
+    if (speaker_gender != null && !TRANSLATE_SPEAKER_GENDERS.includes(speaker_gender)) {
+      return res.status(400).json({ error: `speaker_gender must be one of: ${TRANSLATE_SPEAKER_GENDERS.join(', ')}` });
     }
 
     const maxChars = isAnonymous ? ANONYMOUS_MAX_CHARS.translate : 1000;
@@ -282,12 +323,13 @@ router.post('/translate', async (req, res) => {
       source_language_code: source_language_code === 'auto' ? 'auto' : source_language_code,
       target_language_code,
       ...(model && { model }),
+      ...(mode && { mode }),
+      ...(speaker_gender && { speaker_gender }),
     };
 
-    const { data, status } = await axios.post(`${SARVAM_BASE}/translate`, payload, {
+    const { data, status } = await sarvamPost(`${SARVAM_BASE}/translate`, payload, {
       headers: sarvamHeaders(apiKey),
       responseType: 'json',
-      validateStatus: () => true,
     });
 
     if (status !== 200) {

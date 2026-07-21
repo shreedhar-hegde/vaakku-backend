@@ -75,7 +75,7 @@ export function buildSttPayload(_req, resData) {
 
 export function buildTranslatePayload(reqBody, resData) {
   const input = reqBody?.input ?? '';
-  const output = resData?.output ?? resData?.translated_text ?? resData?.text ?? '';
+  const output = resData?.translated_text ?? '';
   return {
     input: truncate(String(input), MAX_INPUT),
     output: truncate(String(output), MAX_OUTPUT),
