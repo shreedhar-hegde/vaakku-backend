@@ -1,0 +1,14 @@
+name: Keep-alive ping
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping health endpoint
+        run: |
+          curl -sf "${{ secrets.RENDER_HEALTH_URL }}/health" || exit 1

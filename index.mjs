@@ -10,7 +10,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import { rateLimit } from 'express-rate-limit';
 import fs from 'fs';
-import { initDb } from './db.js';
+import { initDb, getStatsCollection } from './db.js';
 import authRoutes from './routes/auth.js';
 import userRoutes from './routes/user.js';
 import aiRoutes from './routes/ai.js';
@@ -54,7 +54,14 @@ app.use('/api/ai', aiRoutes);
 app.use('/api/history', historyRoutes);
 app.use('/api/admin', adminRoutes);
 
-app.get('/health', (_, res) => res.json({ ok: true }));
+app.get('/health', async (_, res) => {
+  try {
+    await getStatsCollection().findOne({ _id: 'global' });
+    res.json({ ok: true, db: 'up' });
+  } catch (err) {
+    res.status(503).json({ ok: false, db: 'down', error: err.message });
+  }
+});
 
 initDb()
   .then(() => {
